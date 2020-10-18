@@ -16,13 +16,11 @@
 import argparse
 import os
 import sys
-#import statistics
-#from random import randint
-#import random
-from operator import itemgetter
+import statistics
+import random
 import networkx as nx
 import matplotlib.pyplot as plt
-#random.seed(9001)
+random.seed(9001)
 
 
 
@@ -139,7 +137,7 @@ def build_graph(dico):
 def get_starting_nodes(arbre):
     """
     La fonction get_starting_nodes prend en entrée
-    arbre: un graphe
+    arbre: object networkx DiGraph()
     renvoit une liste de noeuds d'entrée (str ou int)
     """
     nodes_in = []
@@ -152,7 +150,7 @@ def get_starting_nodes(arbre):
 def get_sink_nodes(arbre):
     """
     La fonction get_sink_nodes prend en entrée
-    arbre graphe
+    arbre: object networkx DiGraph()
     renvoit une liste de noeuds de sortie (str ou int)
     """
     nodes_out = []
@@ -172,7 +170,7 @@ def fill(text, width=80):
 def get_contigs(arbre, entree, sortie):
     """
     La fonction get_sink_nodes prend en entrée
-    arbre: graphe
+    arbre: object networkx DiGraph()
     entree: une liste de noeurds d'entree (str)
     sortie: une liste de noeurds de sortie (str)
     renvoit une liste de tuple avec le contig (str) et sa taille (int)
@@ -193,8 +191,9 @@ def get_contigs(arbre, entree, sortie):
 def save_contigs(contig,fichier):
     """
     La fonction save_contigs prend en entrée
-    une liste de tuple et un nom de fichier de
-    sortie et renvoit un fichier fasta
+    contig: une liste de tuple
+    fichier: nom de fichier de sortie
+    renvoit un fichier fasta
     """
     with open(fichier, "w") as filout:
         for i,seq in enumerate(contig):
@@ -203,6 +202,110 @@ def save_contigs(contig,fichier):
             filout.write("\n")
         return filout
 
+
+##########################################################
+###### 3. Simplification du graphe de de Bruijn ##########
+##########################################################
+
+def std(liste):
+    """
+    calcule de lecart type de la liste
+    """
+    return statistics.stdev(liste)
+
+
+def path_average_weight(arbre,chemin):
+    """
+    prend un graphe (arbre): object networkx DiGraph()
+    un chemin: liste de chaine de caractères (str)
+    renvoit le poids moyen du chemin (float)
+    """
+    liste_weights = []
+    for i,j,poids in arbre.subgraph(chemin).edges(data=True):
+        liste_weights.append(poids["weight"])
+    return statistics.mean(liste_weights)
+
+
+
+def remove_paths(arbre,liste_chemin, delete_entry_node, delete_sink_node):
+    """
+    prend un graphe (arbre): object networkx DiGraph()
+    liste_chemin: liste de chaine de caractères (str)
+    delete_entry_node: variable booléenne (True/False)
+    delete_sink_node: variable booléenne (True/False)
+    retourne l'arbre nettoyé des chemins indésirables
+    """
+    for i in range(len(liste_chemin)):
+        if delete_entry_node == True:
+            arbre.remove_node(liste_chemin[i][0])
+        if delete_sink_node == True:
+            arbre.remove_node(liste_chemin[i][-1])
+    return arbre
+
+
+def select_best_path(arbre, liste_chemin, liste_taille,liste_weights,
+    delete_entry_node = False, delete_sink_node =False):
+    """
+    prend un graphe (arbre): object networkx DiGraph()
+    liste_chemin: liste de chaine de caractères (str)
+    liste_taille: liste de la taille de chaque chemin (int)
+    liste_weights: liste de poids moyen de chaque chemin (float)
+    delete_entry_node: variable booléenne (False)
+    delete_sink_node: variable booléenne (False)
+    retourne l'arbre nettoyé des chemins indésirables
+
+    Meilleur chemin: celui qui a le meilleur poids
+    si 2 chemins avec même poids => on prend celui le plus long
+    si même taille => on prend random
+    """
+    # initialisation des paramètres
+    path_max_weight = 0
+    path_max_length = 0
+    path_max_indice = -1
+    for i in range(len(liste_chemin)):
+        # on prend la path avec le meilleur poids
+        if liste_weights[i] > path_max_weight[i]:
+            path_max_weight = liste_weights[i]
+            path_max_length = liste_taille[i]
+            path_max_indice = i
+        # si on a même poids, recherche de la plus longue séquence
+        elif liste_weights[i] == path_max_weight[i]:
+            if liste_taille[i] > path_max_length[i]:
+                path_max_weight = liste_weights[i]
+                path_max_length = liste_taille[i]
+                path_max_indice = i
+            # si même taille de sequence, random entre les 2 seqs
+            elif liste_taille[i] == path_max_length[i]:
+                choix_path = random.randrange(0,1)
+                if choix_path:
+                    path_max_weight = liste_weights[i]
+                    path_max_length = liste_taille[i]
+                    path_max_indice = i
+
+    arbre = remove_paths(arbre, liste_chemin[:path_max_indice]+
+        liste_chemin[path_max_indice+1:], delete_entry_node,
+        delete_sink_node)
+    return arbre
+
+
+
+def solve_bubble(arbre, ancetre, descendant):
+    """
+    prend un graphe (arbre): object networkx DiGraph()
+    ancetre: noeud ancêtre, chaine de caractères (str)
+    descendant: noeud descendant, chaine de caractères (str)
+    renvoit un graphe (arbre) nettoyé de la bulle
+    """
+    solve_path = []
+    solve_length = []
+    solve_weight = []
+    paths =nx.all_simple_paths(arbre, ancetre, descendant)
+    for path in paths:
+        solve_path.append(path)
+        solve_length.append(len(path))
+        solve_weight.append(path_average_weight(arbre,path))
+    arbre = select_best_path(arbre, solve_path, solve_length,solve_weight)
+    return arbre
 
 
 
@@ -216,10 +319,19 @@ def main():
     # Get arguments
     args = get_arguments()
 
-if __name__ == '__main__':
-    kmer = build_kmer_dict(sys.argv[2],int(sys.argv[4]))
+    # lecture du fichier
+    file = sys.argv[2]
+
+    # construction du graphe grace au dictionnaire kmer
+    kmer = build_kmer_dict(file,int(sys.argv[4]))
     graphe = build_graph(kmer)
+
+    # ecriture du/des contigs
     entry = get_starting_nodes(graphe)
     ending = get_sink_nodes(graphe)
     sequences = get_contigs(graphe,entry,ending)
     save_contigs(sequences, "path_contig.txt")
+
+
+if __name__ == '__main__':
+    main()
